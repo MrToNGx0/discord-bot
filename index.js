@@ -231,10 +231,15 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = process.env.PUBLIC_URL;
 
-setInterval(() => {
-    if (PUBLIC_URL) {
-        fetch(PUBLIC_URL)
-            .then(() => console.log('Self-ping keep-alive'))
-            .catch(() => console.error('Self-ping failed'));
-    }
-}, 10 * 60 * 1000);
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    checkYoutubeFeed();
+
+    setInterval(() => {
+        if (PUBLIC_URL) {
+            fetch(PUBLIC_URL)
+                .then(() => console.log('Self-ping keep-alive'))
+                .catch(() => console.error('Self-ping failed'));
+        }
+    }, 10 * 60 * 1000);
+});
