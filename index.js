@@ -11,7 +11,7 @@ app.use(bodyParser.json());
 const DISCORD_WEBHOOK_DONATE_URL = process.env.DISCORD_WEBHOOK_DONATE_URL;
 const DISCORD_WEBHOOK_NEW_VIDEO_URL = process.env.DISCORD_WEBHOOK_NEW_VIDEO_URL;
 const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID;
-const CHECK_INTERVAL = 5 * 60 * 1000;
+const CHECK_INTERVAL = (parseInt(process.env.TIME_INTERVAL, 10) || 30) * 60 * 1000;
 const LEADERBOARD_FILE = 'donators.json';
 
 // ----------------------------
@@ -229,7 +229,12 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    checkYoutubeFeed();
-});
+const PUBLIC_URL = process.env.PUBLIC_URL;
+
+setInterval(() => {
+    if (PUBLIC_URL) {
+        fetch(PUBLIC_URL)
+            .then(() => console.log('Self-ping keep-alive'))
+            .catch(() => console.error('Self-ping failed'));
+    }
+}, 10 * 60 * 1000);
