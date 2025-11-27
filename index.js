@@ -5,41 +5,75 @@ const fetch = require('node-fetch');
 const Parser = require('rss-parser');
 const fs = require('fs');
 
+// ----------------------------
+// CONFIG (อ่านจาก ENV)
+// ----------------------------
+const config = {
+    donateWebhook: process.env.DISCORD_WEBHOOK_DONATE_URL,
+    videoWebhook: process.env.DISCORD_WEBHOOK_NEW_VIDEO_URL,
+    youtubeChannelId: process.env.YOUTUBE_CHANNEL_ID,
+    leaderboardFile: process.env.LEADERBOARD_FILE || 'donators.json',
+
+    checkInterval: (parseInt(process.env.TIME_INTERVAL, 10) || 30) * 60 * 1000,
+    port: process.env.PORT || 3000,
+    publicUrl: process.env.PUBLIC_URL || null,
+
+    donateColor: parseInt(process.env.DONATE_COLOR || '0xffe066'),
+    videoColor: parseInt(process.env.VIDEO_COLOR || '0x00ff00'),
+    liveColor: parseInt(process.env.LIVE_COLOR || '0xff0000'),
+    shortColor: parseInt(process.env.SHORT_COLOR || '0x00aaff'),
+
+    leaderboardTitle: process.env.LEADERBOARD_TITLE || '🏆 สุดยอดผู้สนับสนุนประจำสัปดาห์',
+    leaderboardFooter: process.env.LEADERBOARD_FOOTER || 'ขอบคุณทุกการสนับสนุน ❤️',
+
+    donateLevels: process.env.DONATE_LEVELS
+        ? JSON.parse(process.env.DONATE_LEVELS)
+        : [
+              { min: 0, max: 50, title: 'ผู้สนับสนุนระดับหมอรำ!', gif: 'https://media.giphy.com/media/HmO7FZjok6mhW/giphy.gif' },
+              { min: 51, max: 100, title: 'ผู้สนับสนุนระดับพิเศษ!', gif: 'https://media.giphy.com/media/CIe1iwzke30wU/giphy.gif' },
+              { min: 101, max: 300, title: 'ผู้สนับสนุนระดับซุปเปอร์!', gif: 'https://media.giphy.com/media/11nuvoZGgSH3Ne/giphy.gif' },
+              { min: 301, max: 999999, title: 'ผู้สนับสนุนระดับตำนาน!', gif: 'https://media.giphy.com/media/rfqZyGGilNv20/giphy.gif' },
+          ],
+};
+
+// ----------------------------
+// Feature Toggle
+// ----------------------------
+const feature = {
+    donation: process.env.FEATURE_DONATION !== 'false',
+    leaderboard: process.env.FEATURE_LEADERBOARD !== 'false',
+    youtube: process.env.FEATURE_YOUTUBE !== 'false',
+    selfPing: process.env.FEATURE_SELF_PING !== 'false',
+    autoLeaderboard: process.env.FEATURE_AUTO_LEADERBOARD !== 'false',
+};
+
+// ----------------------------
 const app = express();
 app.use(bodyParser.json());
 
-const DISCORD_WEBHOOK_DONATE_URL = process.env.DISCORD_WEBHOOK_DONATE_URL;
-const DISCORD_WEBHOOK_NEW_VIDEO_URL = process.env.DISCORD_WEBHOOK_NEW_VIDEO_URL;
-const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID;
-const CHECK_INTERVAL = (parseInt(process.env.TIME_INTERVAL, 10) || 30) * 60 * 1000;
-const LEADERBOARD_FILE = 'donators.json';
-
 // ----------------------------
-// ฟังก์ชัน Leaderboard
+// Leaderboard Functions
 // ----------------------------
 function loadLeaderboard() {
     try {
-        const data = fs.readFileSync(LEADERBOARD_FILE, 'utf-8');
+        const data = fs.readFileSync(config.leaderboardFile, 'utf-8');
         return JSON.parse(data);
-    } catch (err) {
+    } catch {
         return [];
     }
 }
 
 function saveLeaderboard(leaderboard) {
-    console.log(leaderboard);
-    fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard, null, 2));
+    fs.writeFileSync(config.leaderboardFile, JSON.stringify(leaderboard, null, 2));
 }
 
-// ----------------------------
-// ฟังก์ชัน Leaderboard แบบเก็บเวลา
-// ----------------------------
 function addDonator(name, amount, time) {
+    if (!feature.leaderboard) return;
     const leaderboard = loadLeaderboard();
     leaderboard.push({
         name,
         amount,
-        time: time || new Date().toISOString(), // บันทึกเวลา donation
+        time: time || new Date().toISOString(),
     });
     saveLeaderboard(leaderboard);
 }
@@ -48,198 +82,172 @@ function getTopDonators(limit = 5) {
     const leaderboard = loadLeaderboard();
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    const filtered = leaderboard
-        .filter((d) => new Date(d.time) >= sevenDaysAgo)
+    return leaderboard
+        .filter((item) => new Date(item.time) >= sevenDaysAgo)
         .reduce((acc, d) => {
-            const idx = acc.findIndex((x) => x.name === d.name);
-            if (idx >= 0) {
-                acc[idx].amount += d.amount;
-            } else {
-                acc.push({ name: d.name, amount: d.amount });
-            }
+            const found = acc.find((x) => x.name === d.name);
+            if (found) found.amount += d.amount;
+            else acc.push({ name: d.name, amount: d.amount });
             return acc;
         }, [])
         .sort((a, b) => b.amount - a.amount)
         .slice(0, limit);
-
-    return filtered;
 }
 
 function createLeaderboardEmbed() {
-    const topDonators = getTopDonators();
-    if (topDonators.length === 0) return null;
+    if (!feature.leaderboard) return null;
 
-    const description = topDonators.map((d, i) => `**#${i + 1}** - __${d.name}__ 💖 ${d.amount} บาท`).join('\n');
+    const list = getTopDonators();
+    if (list.length === 0) return null;
 
     return {
         embeds: [
             {
-                title: '🏆 สุดยอดคนรักเดียวประจำสัปดาห์',
-                description,
+                title: config.leaderboardTitle,
+                description: list.map((d, i) => `**#${i + 1}** - __${d.name}__ 💖 ${d.amount} บาท`).join('\n'),
                 color: 0xffc107,
                 timestamp: new Date().toISOString(),
-                footer: { text: 'ขอบคุณทุกการสนับสนุน ❤️' },
+                footer: { text: config.leaderboardFooter },
             },
         ],
     };
 }
 
 async function sendLeaderboardToDiscord() {
+    if (!feature.leaderboard || !feature.autoLeaderboard) return;
+
     const embed = createLeaderboardEmbed();
     if (!embed) return;
-    try {
-        const res = await fetch(DISCORD_WEBHOOK_DONATE_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(embed),
-        });
-        if (!res.ok) throw new Error(`Discord webhook error: ${res.statusText}`);
-        console.log('ส่ง Leaderboard ไป Discord เรียบร้อย');
-    } catch (err) {
-        console.error(err);
-    }
+
+    await fetch(config.donateWebhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(embed),
+    });
 }
 
 // ----------------------------
-// ระบบแจ้งเตือนผู้สนับสนุน
+// Donation Level Helper
+// ----------------------------
+function getDonateLevel(amount) {
+    return config.donateLevels.find((l) => amount >= l.min && amount <= l.max) || config.donateLevels[0];
+}
+
+// ----------------------------
+// Donation Endpoint
 // ----------------------------
 app.post('/webhook', async (req, res) => {
-    const data = req.body;
+    if (!feature.donation) return res.status(503).send('Donation feature disabled.');
 
-    function getGifByAmount(amount) {
-        if (amount >= 0 && amount <= 50)
-            return 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDg5cjh2bnBweHRta2Y5M2I0ZGFrbDRvbnJibHdqbHZneDFlMmM3ayZlcD12MV9naWZzX3NlYXJjaCZjdD1n/HmO7FZjok6mhW/giphy.gif';
-        else if (amount >= 51 && amount <= 100)
-            return 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExdDg5cjh2bnBweHRta2Y5M2I0ZGFrbDRvbnJibHdqbHZneDFlMmM3ayZlcD12MV9naWZzX3NlYXJjaCZjdD1n/CIe1iwzke30wU/giphy.gif';
-        else if (amount >= 101 && amount <= 300)
-            return 'https://media.giphy.com/media/v1.Y2lkPWVjZjA1ZTQ3ajI4M2JhYnc2eWxnYW9oY2c0ZGgwOHp4cDV0aHZrY3Ewa2xmZDZqbSZlcD12MV9naWZzX3NlYXJjaCZjdD1n/11nuvoZGgSH3Ne/giphy.gif';
-        else if (amount >= 301)
-            return 'https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExanV5bzEzdTM5bHI5MjZtenBqbDdsMncyN3Mwb3JodTNtbWIzdG90ZCZlcD12MV9naWZzX3NlYXJjaCZjdD1n/rfqZyGGilNv20/giphy.gif';
-        else return null;
-    }
-
-    function getTitleByAmount(amount) {
-        if (amount >= 0 && amount <= 50) return 'ผู้สนับสนุนระดับหมอรำ!';
-        else if (amount >= 51 && amount <= 100) return 'ผู้สนับสนุนระดับพิเศษ!';
-        else if (amount >= 101 && amount <= 300) return 'ผู้สนับสนุนระดับซุปเปอร์!';
-        else if (amount >= 301) return 'ผู้สนับสนุนระดับตำนาน!';
-        else return 'ผู้สนับสนุน';
-    }
-
-    const gifUrl = getGifByAmount(data.amount || 0);
-    const title = getTitleByAmount(data.amount || 0);
+    const { donatorName, amount, donateMessage, time } = req.body;
+    const level = getDonateLevel(amount || 0);
 
     const embed = {
         embeds: [
             {
-                title: title,
+                title: level.title,
                 description:
-                    `✨ __**${data.donatorName || 'ผู้สนับสนุน'}**__ ✨\n\n` +
-                    `ร่วมสนับสนุนจำนวน **${data.amount || 0} บาท** 💖\n\n` +
-                    `💬 **ข้อความจากผู้สนับสนุน:**\n> ${data.donateMessage || '-'}`,
-                color: 0xffe066,
-                timestamp: data.time || new Date().toISOString(),
-                footer: { text: 'สนับสนุนเพิ่มเติมได้ที่: https://ezdn.app/mrtongx0' },
-                image: gifUrl ? { url: gifUrl } : undefined,
+                    `✨ __**${donatorName || 'ผู้สนับสนุน'}**__ ✨\n\n` +
+                    `ร่วมสนับสนุนจำนวน **${amount || 0} บาท** 💖\n\n` +
+                    `💬 ข้อความ:\n> ${donateMessage || '-'}`,
+                color: config.donateColor,
+                timestamp: time || new Date().toISOString(),
+                image: level.gif ? { url: level.gif } : undefined,
             },
         ],
     };
 
-    addDonator(data.donatorName || 'ผู้สนับสนุน', data.amount || 0);
+    addDonator(donatorName || 'ผู้สนับสนุน', amount || 0);
 
     try {
-        await fetch(DISCORD_WEBHOOK_DONATE_URL, {
+        await fetch(config.donateWebhook, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(embed),
         });
-        await sendLeaderboardToDiscord();
 
-        res.status(200).send('Embed sent to Discord!');
+        await sendLeaderboardToDiscord();
+        res.send('OK');
     } catch (err) {
         console.error(err);
-        res.status(500).send('Error sending embed to Discord');
+        res.status(500).send('Error');
     }
 });
 
 // ----------------------------
-// ระบบแจ้งเตือนคลิป YouTube
+// YouTube Checker
 // ----------------------------
 const parser = new Parser();
 let lastVideoId = null;
 
 async function checkYoutubeFeed() {
-    const feedUrl = `https://www.youtube.com/feeds/videos.xml?channel_id=${YOUTUBE_CHANNEL_ID}`;
-    try {
-        const feed = await parser.parseURL(feedUrl);
-        if (!feed.items || feed.items.length === 0) return;
+    if (!feature.youtube) return;
 
-        const latest = feed.items[0];
+    const url = `https://www.youtube.com/feeds/videos.xml?channel_id=${config.youtubeChannelId}`;
+    try {
+        const feed = await parser.parseURL(url);
+        const latest = feed.items?.[0];
+        if (!latest) return;
+
         const videoId = latest.id.replace('yt:video:', '');
         if (videoId === lastVideoId) return;
         lastVideoId = videoId;
 
+        let color = config.videoColor;
         let type = 'Video';
-        let color = 0x00ff00;
+
         if (latest.title.toLowerCase().includes('live')) {
+            color = config.liveColor;
             type = 'Live';
-            color = 0xff0000;
         } else if (latest.link.includes('shorts')) {
+            color = config.shortColor;
             type = 'Short';
-            color = 0x00aaff;
         }
 
         const thumbnail = latest['media:group']?.['media:thumbnail']?.['$']?.url || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
 
-        const embed = {
-            embeds: [
-                {
-                    title: `📢 ${type} ใหม่จากช่อง YouTube!`,
-                    description: `[คลิกเพื่อชมคลิป!](https://www.youtube.com/watch?v=${videoId})\n\n**${latest.title}**`,
-                    color: color,
-                    timestamp: latest.pubDate,
-                    image: { url: thumbnail },
-                    footer: {
-                        text: 'ติดตามเพิ่มเติมได้ที่ YouTube ของเรา',
-                        icon_url: 'https://www.youtube.com/s/desktop/6d62f0d2/img/favicon_144.png',
-                    },
-                },
-            ],
-        };
-
-        await fetch(DISCORD_WEBHOOK_NEW_VIDEO_URL, {
+        await fetch(config.videoWebhook, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(embed),
+            body: JSON.stringify({
+                embeds: [
+                    {
+                        title: `📢 มี${type} ใหม่แล้ว!`,
+                        description: `[คลิกเพื่อดูคลิป](https://youtu.be/${videoId})\n\n**${latest.title}**`,
+                        color,
+                        timestamp: latest.pubDate,
+                        image: { url: thumbnail },
+                    },
+                ],
+            }),
         });
 
-        console.log(`ส่งแจ้งเตือนคลิปใหม่: ${latest.title}`);
+        console.log('Sent YouTube notify:', latest.title);
     } catch (err) {
-        console.error('Error checking YouTube RSS:', err);
+        console.error('YouTube Error:', err);
     }
 }
 
-setInterval(checkYoutubeFeed, CHECK_INTERVAL);
+if (feature.youtube) setInterval(checkYoutubeFeed, config.checkInterval);
 
 // ----------------------------
-// Express server สำหรับ Render
+// Home route
 // ----------------------------
 app.get('/', (req, res) => {
-    res.send('Discord Bot running with donations, leaderboard & YouTube notifications!');
+    res.send('Discord Bot Running...');
 });
 
-const PORT = process.env.PORT || 3000;
-const PUBLIC_URL = process.env.PUBLIC_URL;
+// ----------------------------
+// Start server
+// ----------------------------
+app.listen(config.port, () => {
+    console.log('Server on port', config.port);
 
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    checkYoutubeFeed();
+    if (feature.youtube) checkYoutubeFeed();
 
-    setInterval(() => {
-        if (PUBLIC_URL) {
-            fetch(PUBLIC_URL)
-                .then(() => console.log('Self-ping keep-alive'))
-                .catch(() => console.error('Self-ping failed'));
-        }
-    }, 10 * 60 * 1000);
+    if (feature.selfPing && config.publicUrl) {
+        setInterval(() => {
+            fetch(config.publicUrl).catch(() => {});
+        }, 10 * 60 * 1000);
+    }
 });
